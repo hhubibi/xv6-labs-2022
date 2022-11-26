@@ -81,7 +81,7 @@ usertrap(void)
     if(p->n != 0){
       if(p->elasped == p->n){
         if(p->handling == 0){
-          memmove((void *)(p->alarm_trapframe), (void *)(p->trapframe), sizeof(struct trapframe));
+          memmove(p->alarm_trapframe, p->trapframe, sizeof(struct trapframe));
           p->trapframe->epc = p->handler;
           p->handling = 1;
         }

@@ -112,7 +112,7 @@ sys_sigalarm(void)
 uint64
 sys_sigreturn(void)
 {
-  memmove((void *)(myproc()->trapframe), (void *)(myproc()->alarm_trapframe), sizeof(struct trapframe));
+  memmove(myproc()->trapframe, myproc()->alarm_trapframe, sizeof(struct trapframe));
   myproc()->handling = 0;
   return myproc()->trapframe->a0;
 }
