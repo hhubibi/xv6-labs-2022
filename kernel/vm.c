@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -100,6 +102,24 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     }
   }
   return &pagetable[PX(0, va)];
+}
+
+pte_t *
+walkpage(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+
+  if(va >= MAXVA)
+    return 0;
+
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return 0;
+  if((*pte & PTE_V) == 0)
+    return 0;
+  if((*pte & PTE_U) == 0)
+    return 0;
+  return pte;
 }
 
 // Look up a virtual address, return the physical address,
@@ -308,7 +328,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -316,14 +335,15 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    if(*pte & PTE_W){
+      *pte &= ~PTE_W;
+      *pte |= PTE_COW;
+    }
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
       goto err;
     }
+    kref_get(pa);
   }
   return 0;
 
@@ -345,6 +365,47 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+int
+cowmap(pte_t *pte)
+{
+  char *mem;
+  uint64 pa;
+  uint flags;
+
+  pa = PTE2PA(*pte);
+  if(kref_read(pa) > 1){
+    if((mem = kalloc()) == 0){
+      // no free memory, kill the process
+      return -1;
+    } else {
+      kfree((void*)pa);
+      memmove(mem, (char *)pa, PGSIZE);
+      pa = (uint64)mem;
+    }
+  }
+  flags = (PTE_FLAGS(*pte) & (~PTE_COW)) | PTE_W;
+  *pte = PA2PTE(pa) | flags;
+  return 0;
+}
+
+int
+uvmcow(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+
+  if((pte = walkpage(pagetable, va)) == 0)
+    return -1;
+  
+  if((*pte & PTE_COW) == 0)
+    return -1;
+
+  if(cowmap(pte) < 0)
+    return -1;
+  
+  return 0;
+}
+
+
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
@@ -352,12 +413,20 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t *pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+
+    if((pte = walkpage(pagetable, va0)) == 0)
       return -1;
+    
+    if((*pte & PTE_COW) && cowmap(pte) < 0){
+      setkilled(myproc());
+      return -1;
+    }
+    pa0 = PTE2PA(*pte);
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
