@@ -4,7 +4,9 @@
 #include "riscv.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "fcntl.h"
 #include "defs.h"
+
 
 struct spinlock tickslock;
 uint ticks;
@@ -65,6 +67,11 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 15 || r_scause() == 13){
+    if(uvmmmap(r_stval()) < 0){
+      setkilled(p);
+    }
+
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

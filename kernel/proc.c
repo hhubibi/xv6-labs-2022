@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -124,6 +125,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->mmap_bitmap = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -163,6 +165,7 @@ freeproc(struct proc *p)
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
+  p->mmap_bitmap = 0;
   p->parent = 0;
   p->name[0] = 0;
   p->chan = 0;
@@ -296,6 +299,13 @@ fork(void)
   }
   np->sz = p->sz;
 
+  np->mmap_bitmap = p->mmap_bitmap;
+  for(i = 0; i < NVMA; i++){
+    np->mmap[i] = p->mmap[i];
+    if((1<<i) & p->mmap_bitmap)
+      filedup(p->mmap[i].file);
+  }
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -350,6 +360,17 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  for(int i = 0; i < NVMA; i++){
+    if((1<<i) & p->mmap_bitmap){
+      if(p->mmap[i].flags & MAP_SHARED)
+        filewrite(p->mmap[i].file, p->mmap[i].start, p->mmap[i].length);
+
+      uvmmunmap(p->pagetable, p->mmap[i].start, p->mmap[i].length/PGSIZE, 1);
+      fileclose(p->mmap[i].file);
+      p->mmap_bitmap &= ~(1<<i);
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

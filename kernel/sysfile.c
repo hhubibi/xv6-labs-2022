@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -501,5 +502,92 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int prot, flags, fd, length, offset;
+  int i;
+  struct proc *p;
+  struct file *f;
+
+  argaddr(0, &addr);
+  argint(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  argint(5, &offset);
+
+  p = myproc();
+  if((f = p->ofile[fd]) == 0)
+    return -1;
+  
+  if((!f->writable && (prot&PROT_WRITE) && !(flags&MAP_PRIVATE))
+      || (!f->readable && (prot&PROT_READ)))
+    return -1;
+  
+  for(i = 0; i < NVMA; i++){
+    if(((1 << i) & p->mmap_bitmap) == 0){
+      p->mmap_bitmap |= (1 << i);
+      p->mmap[i].start = VAMMAP(i);
+      p->mmap[i].length = length;
+      p->mmap[i].prot = prot;
+      p->mmap[i].flags = flags;
+      p->mmap[i].offset = offset;
+      p->mmap[i].file = f;
+      f = filedup(f);
+      break;
+    }
+  }
+
+  if(i == NVMA)
+    return -1;
+
+  return p->mmap[i].start;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  int i;
+  struct proc *p;
+
+  argaddr(0, &addr);
+  argint(1, &length);
+
+  p = myproc();
+
+  for(i = 0; i < NVMA; i++){
+    if((((1 << i) & p->mmap_bitmap) == 1) && (p->mmap[i].start <= addr) && (addr < p->mmap[i].start + p->mmap[i].length)){
+      break;
+    }
+  }
+
+  if(i == NVMA)
+    return -1;
+  
+  if((addr > p->mmap[i].start && addr + length < p->mmap[i].start + p->mmap[i].length)
+      || addr + length > p->mmap[i].start + p->mmap[i].length)
+    return -1;
+  
+  if(p->mmap[i].flags & MAP_SHARED)
+    filewrite(p->mmap[i].file, addr, length);
+
+  uvmmunmap(p->pagetable, addr, length/PGSIZE, 1);
+
+  if(addr == p->mmap[i].start){
+    p->mmap[i].start += length;
+  }
+  p->mmap[i].length -= length;
+  if(p->mmap[i].length == 0){
+    fileclose(p->mmap[i].file);
+    p->mmap_bitmap &= ~(1<<i);
+  }
+  
   return 0;
 }

@@ -65,3 +65,5 @@
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
+
+#define VAMMAP(i) (TRAMPOLINE - ((i)+1) * (1<<30) / PGSIZE)

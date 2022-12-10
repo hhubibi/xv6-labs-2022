@@ -5,6 +5,12 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+#include "fcntl.h"
+#include "defs.h"
+#include "sleeplock.h"
+#include "file.h"
 
 /*
  * the kernel's page table.
@@ -435,5 +441,72 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+int
+uvmmmap(uint64 va)
+{
+  int i;
+  struct proc *p = myproc();
+  
+  for(i = 0; i < NVMA; i++){
+    if((1<<i) & p->mmap_bitmap){
+      if(va >= p->mmap[i].start && va < p->mmap[i].length + p->mmap[i].start){
+        break;
+      }
+    }
+  }
+  if(i == NVMA){
+    return -1;
+  } else{
+    void *pa = kalloc();
+    if(pa == 0){
+      return -1;
+    } else {
+      memset(pa, 0, PGSIZE);
+      
+      ilock(p->mmap[i].file->ip);
+      readi(p->mmap[i].file->ip, 0, (uint64)pa, p->mmap[i].offset + va - p->mmap[i].start, PGSIZE);
+      iunlock(p->mmap[i].file->ip);
+
+      
+      uint flags = PTE_U;
+      if(p->mmap[i].prot & PROT_READ)
+        flags |= PTE_R;
+      if(p->mmap[i].prot & PROT_WRITE)
+        flags |= PTE_W;
+      if(mappages(p->pagetable, va, PGSIZE, (uint64)pa, flags) != 0){
+        kfree(pa);
+        return -1;
+      }
+    }
+    
+  }
+
+  return 0;
+}
+
+void
+uvmmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
+{
+  uint64 a;
+  pte_t *pte;
+
+  if((va % PGSIZE) != 0)
+    panic("uvmunmap: not aligned");
+
+  for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+    if((pte = walk(pagetable, a, 0)) == 0)
+      panic("uvmunmap: walk");
+    if((*pte & PTE_V) == 0)
+      return;
+    if(PTE_FLAGS(*pte) == PTE_V)
+      panic("uvmunmap: not a leaf");
+    if(do_free){
+      uint64 pa = PTE2PA(*pte);
+      kfree((void*)pa);
+    }
+    *pte = 0;
   }
 }
